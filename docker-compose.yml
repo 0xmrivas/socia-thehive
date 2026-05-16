@@ -1,0 +1,126 @@
+services:
+  cassandra:
+    image: cassandra:4.1
+    container_name: socia-cassandra
+    hostname: cassandra
+    restart: unless-stopped
+    environment:
+      CASSANDRA_CLUSTER_NAME: SOCIA-TheHive
+      CASSANDRA_DC: dc1
+      CASSANDRA_RACK: rack1
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      CASSANDRA_NUM_TOKENS: 16
+      MAX_HEAP_SIZE: 1G
+      HEAP_NEWSIZE: 256M
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    networks:
+      - socia-thehive
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' 127.0.0.1 9042 >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 90s
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.24
+    container_name: socia-elasticsearch
+    hostname: elasticsearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+      bootstrap.memory_lock: "true"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    networks:
+      - socia-thehive
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow\\&timeout=5s >/dev/null"]
+      interval: 20s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  thehive:
+    image: strangebee/thehive:5.2
+    container_name: socia-thehive
+    hostname: thehive
+    restart: unless-stopped
+    depends_on:
+      cassandra:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    ports:
+      - "9000:9000"
+    environment:
+      JAVA_OPTS: "-Xms1g -Xmx1g"
+      THEHIVE_SECRET: "${THEHIVE_SECRET}"
+    volumes:
+      - ./thehive/config/application.conf:/etc/thehive/application.conf:ro
+      - thehive-files:/opt/thp/thehive/files
+      - thehive-logs:/var/log/thehive
+    networks:
+      - socia-thehive
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/api/status >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+
+  cortex:
+    image: thehiveproject/cortex:3.1.7
+    container_name: socia-cortex
+    hostname: cortex
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    ports:
+      - "9001:9001"
+    command:
+      - "--es-uri"
+      - "http://elasticsearch:9200"
+      - "--secret"
+      - "${CORTEX_SECRET}"
+      - "--job-directory"
+      - "/tmp/cortex-jobs"
+      - "--docker-job-directory"
+      - "${CORTEX_DOCKER_JOB_DIRECTORY}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./cortex/config/application.conf:/etc/cortex/application.conf:ro
+      - ./cortex/Cortex-Analyzers:/opt/Cortex-Analyzers:ro
+      - ${CORTEX_DOCKER_JOB_DIRECTORY}:/tmp/cortex-jobs
+      - cortex-logs:/var/log/cortex
+    networks:
+      - socia-thehive
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9001/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 90s
+
+networks:
+  socia-thehive:
+    name: socia-thehive
+    driver: bridge
+
+volumes:
+  cassandra-data:
+  elasticsearch-data:
+  thehive-files:
+  thehive-logs:
+  cortex-logs:
